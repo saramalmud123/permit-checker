@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/extract.js": {
+      "regions": ["fra1"]
+    }
+  }
+}
