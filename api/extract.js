@@ -37,7 +37,7 @@ export default async function handler(request, response) {
       },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 1000,
+        max_tokens: 4096,
         messages: [{ role: "user", content: [contentBlock, { type: "text", text: promptText }] }],
       }),
     });
@@ -49,9 +49,7 @@ export default async function handler(request, response) {
       try {
         const errBody = await anthropicResponse.json();
         detail = errBody?.error?.message || "";
-      } catch (e) {
-        // אין גוף JSON תקין בתגובת השגיאה - נמשיך בלי פרטים נוספים
-      }
+      } catch (e) {}
       safeLogError("extract_upstream_error", { upstreamStatus: anthropicResponse.status, detail });
       return response.status(502).json({
         error: `שגיאה מול שירות החילוץ (קוד ${anthropicResponse.status})${detail ? " — " + detail : ""}`,
@@ -63,14 +61,25 @@ export default async function handler(request, response) {
       .map((b) => (b.type === "text" ? b.text : ""))
       .filter(Boolean)
       .join("\n");
-    const cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+    let cleaned = text.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.slice(firstBrace, lastBrace + 1);
+    }
 
     let parsed;
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
-      safeLogError("extract_error", { reason: "json_parse_failed", promptType });
-      return response.status(502).json({ error: "לא ניתן היה לפענח את תגובת מנוע החילוץ" });
+      safeLogError("extract_error", {
+        reason: "json_parse_failed",
+        promptType,
+        textLength: cleaned.length,
+        endsWithClosingBrace: cleaned.trim().endsWith("}"),
+      });
+      return response.status(502).json({ error: "לא ניתן היה לפענח את תגובת מנוע החילוץ - ייתכן שהמסמך גדול/עמוס מדי" });
     }
 
     return response.status(200).json({ result: parsed });
