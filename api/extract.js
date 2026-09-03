@@ -1,19 +1,6 @@
 import { TABU_PROMPT, FORM_PROMPT } from "./_prompts.js";
 import { safeLog, safeLogError } from "./_logger.js";
 
-/**
- * נקודת קצה: POST /api/extract
- * body: { base64: string, mediaType: string, promptType: 'tabu' | 'form' }
- *
- * הערות אבטחה:
- * - מפתח ה-API (ANTHROPIC_API_KEY) נקרא אך ורק כאן, בצד השרת, מתוך משתני
- *   הסביבה של Vercel. הוא לעולם לא נשלח ללקוח ולא נמצא בקוד ה-React.
- * - אין להדפיס ל-console תוכן קבצים, שמות, מספרי זהות או כתובות. הלוגים
- *   כאן כוללים אך ורק מטא-דאטה כללית (סוג הבקשה, קוד סטטוס), בהתאם לעקרון
- *   ה-"Stateless" של המערכת - שום מידע אישי לא אמור להישמר בלוגים.
- * - הגישה לנתיב הזה כבר מוגנת ע"י middleware.js (Basic Auth) ברמת הפרויקט,
- *   אבל אין להסתמך על שכבה אחת בלבד לאורך זמן - זה פתרון מינימלי לפיילוט.
- */
 export default async function handler(request, response) {
   if (request.method !== "POST") {
     return response.status(405).json({ error: "Method not allowed" });
@@ -58,7 +45,17 @@ export default async function handler(request, response) {
     safeLog("extract_request", { promptType, upstreamStatus: anthropicResponse.status });
 
     if (!anthropicResponse.ok) {
-      return response.status(502).json({ error: `שגיאה מול שירות החילוץ (קוד ${anthropicResponse.status})` });
+      let detail = "";
+      try {
+        const errBody = await anthropicResponse.json();
+        detail = errBody?.error?.message || "";
+      } catch (e) {
+        // אין גוף JSON תקין בתגובת השגיאה - נמשיך בלי פרטים נוספים
+      }
+      safeLogError("extract_upstream_error", { upstreamStatus: anthropicResponse.status, detail });
+      return response.status(502).json({
+        error: `שגיאה מול שירות החילוץ (קוד ${anthropicResponse.status})${detail ? " — " + detail : ""}`,
+      });
     }
 
     const data = await anthropicResponse.json();
@@ -78,8 +75,6 @@ export default async function handler(request, response) {
 
     return response.status(200).json({ result: parsed });
   } catch (err) {
-    // בכוונה לא מעבירים את err המלא ל-log - הוא עלול להכיל טקסט שמקורו בקלט המשתמש.
-    // רק שם השגיאה (err.name) מועבר, לא ההודעה (err.message) ולא ה-stack.
     safeLogError("extract_error", { reason: "internal_exception", errorName: err?.name || "Unknown" });
     return response.status(500).json({ error: "שגיאה פנימית בעיבוד הבקשה" });
   }
