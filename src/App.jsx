@@ -82,6 +82,12 @@ function idsMatch(a, b) {
   return na.length >= 5 && na === nb;
 }
 
+function aptNumbersMatch(a, b) {
+  const na = String(a || "").match(/\d+/)?.[0];
+  const nb = String(b || "").match(/\d+/)?.[0];
+  return !!na && na === nb;
+}
+
 /* ---------------- File -> base64 ---------------- */
 
 function guessMediaType(file) {
@@ -162,6 +168,14 @@ function buildReport(subParcels, records) {
         }
       }
 
+      if (!rec) {
+        const aptRec = records.find((r) => r.subParcelId && aptNumbersMatch(r.subParcelId, sp.subParcelId));
+        if (aptRec) {
+          rec = aptRec;
+          matchType = "apartment_number";
+        }
+      }
+
       let color, note;
       if (!rec) {
         color = "red";
@@ -178,6 +192,9 @@ function buildReport(subParcels, records) {
       } else if (matchType === "fuzzy_name") {
         color = "yellow";
         note = `הותאם לפי דמיון שמות ("${o.name}" מול "${rec.name}") — ייתכן הבדל כתיב, מומלץ לאמת ידנית.`;
+      } else if (matchType === "apartment_number") {
+        color = "yellow";
+        note = `הותאם לפי מספר דירה (${sp.subParcelId}) ולא לפי שם או ת.ז. (שם בטופס: "${rec.name}") — מומלץ לאמת ידנית שהחתימה שייכת לבעלים זה.`;
       } else {
         color = "green";
         note = matchType === "id" ? "חתימה/מסירה תקינה, הותאמה לפי מספר זהות." : "חתימה/מסירה תקינה ותואמת.";
@@ -486,11 +503,12 @@ export default function App() {
         setStatusMsg(`מחלץ נתונים מטופס: ${f.name}...`);
         const { base64, mediaType } = await fileToBase64(f);
         const data = await extractViaBackend(base64, mediaType, "form");
-        (data.records || []).forEach((r) =>
+             (data.records || []).forEach((r) =>
           mergedRecords.push({
             id: uid(),
             name: r.name || "",
             idNumber: r.idNumber || "",
+            subParcelId: r.subParcelId || "",
             address: r.address || "",
             status: r.status || "לא_ידוע",
             sourceFile: f.name,
