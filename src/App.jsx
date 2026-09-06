@@ -140,69 +140,74 @@ function buildReport(subParcels, records) {
   let counts = { green: 0, yellow: 0, red: 0 };
 
   const groups = subParcels.map((sp) => {
-    const ownerResults = sp.owners.map((o) => {
-      let rec = null;
-      let matchType = null;
+       const ownerResults = sp.owners.map((o) => {
+      const idMatches = records.filter((r) => idsMatch(r.idNumber, o.idNumber));
+      const nameMatches = o.name ? records.filter((r) => r.name && normalizeName(r.name) === normalizeName(o.name)) : [];
+      const fuzzyMatches = o.name
+        ? records.filter((r) => {
+            const sim = nameSimilarity(o.name, r.name);
+            return sim.match && !sim.exact;
+          })
+        : [];
+      const aptMatches = records.filter((r) => r.subParcelId && aptNumbersMatch(r.subParcelId, sp.subParcelId));
 
-      rec = records.find((r) => idsMatch(r.idNumber, o.idNumber));
-      if (rec) matchType = "id";
+      const strongMatches = [...idMatches, ...nameMatches];
+      const weakMatches = [...fuzzyMatches, ...aptMatches];
+      const allMatchesRaw = strongMatches.length > 0 ? strongMatches : weakMatches;
+      const allMatches = Array.from(new Map(allMatchesRaw.map((r) => [r.id, r])).values());
 
-      if (!rec && o.name) {
-        rec = records.find((r) => r.name && normalizeName(r.name) === normalizeName(o.name));
-        if (rec) matchType = "exact_name";
-      }
+      const matchQuality = strongMatches.length > 0 ? "strong" : weakMatches.length > 0 ? "weak" : "none";
+      const qualityCaveat =
+        matchQuality === "weak"
+          ? fuzzyMatches.length > 0
+            ? ` (הותאם לפי דמיון שמות בלבד - מומלץ לאמת ידנית)`
+            : ` (הותאם לפי מספר דירה בלבד, לא לפי שם/ת.ז. - מומלץ לאמת ידנית)`
+          : "";
 
-      if (!rec && o.name) {
-        let best = null,
-          bestDist = Infinity;
-        records.forEach((r) => {
-          const sim = nameSimilarity(o.name, r.name);
-          if (sim.match && !sim.exact && sim.dist < bestDist) {
-            best = r;
-            bestDist = sim.dist;
-          }
-        });
-        if (best) {
-          rec = best;
-          matchType = "fuzzy_name";
-        }
-      }
+      const signedRec = allMatches.find((r) => r.status === "חתם");
+      const confirmedDeliveryRec = allMatches.find((r) => r.status === "אישור_מסירה_בפועל");
+      const refusedRec = allMatches.find((r) => r.status === "סורב");
+      const notRequiredRec = allMatches.find((r) => r.status === "לא_נדרש");
+      const declaredMailOnlyRec = allMatches.find((r) => r.status === "נשלח_בדואר_רשום");
+      const unknownRec = allMatches.find((r) => r.status === "לא_ידוע");
 
-      if (!rec) {
-        const aptRec = records.find((r) => r.subParcelId && aptNumbersMatch(r.subParcelId, sp.subParcelId));
-        if (aptRec) {
-          rec = aptRec;
-          matchType = "apartment_number";
-        }
-      }
-
-      let color, note;
-      if (!rec) {
+      let color, note, rec;
+      if (allMatches.length === 0) {
         color = "red";
-        note = "לא אותרה חתימה או אישור מסירה התואמים לבעלים זה.";
-      } else if (rec.status === "סורב") {
-        color = "red";
-        note = `אישור מסירה סורב ע"י הנמען (הטופס נקשר ל"${rec.name}") — נדרש טיפול משפטי/פרוצדורלי נוסף.`;
-      } else if (rec.status === "לא_נדרש") {
-        color = "red";
-        note = `המכתב חזר עם ציון "לא נדרש" (הטופס נקשר ל"${rec.name}") — נדרשת בדיקה/מסירה חוזרת.`;
-      } else if (rec.status === "לא_ידוע") {
-        color = "yellow";
-        note = "סטטוס המסירה/החתימה אינו חד־משמעי בטופס — נדרשת בדיקה ידנית.";
-      } else if (matchType === "fuzzy_name") {
-        color = "yellow";
-        note = `הותאם לפי דמיון שמות ("${o.name}" מול "${rec.name}") — ייתכן הבדל כתיב, מומלץ לאמת ידנית.`;
-      } else if (matchType === "apartment_number") {
-        color = "yellow";
-        note = `הותאם לפי מספר דירה (${sp.subParcelId}) ולא לפי שם או ת.ז. (שם בטופס: "${rec.name}") — מומלץ לאמת ידנית שהחתימה שייכת לבעלים זה.`;
-      } else {
+        rec = null;
+        note = "לא אותרה חתימה או הודעה כלשהי (לא בטופס הצהרת השכנים ולא באישור מסירה) עבור בעלים זה.";
+      } else if (signedRec) {
         color = "green";
-        note = matchType === "id" ? "חתימה/מסירה תקינה, הותאמה לפי מספר זהות." : "חתימה/מסירה תקינה ותואמת.";
+        rec = signedRec;
+        note = `חתם/מה בפועל על טופס הצהרת השכנים.${qualityCaveat}`;
+      } else if (confirmedDeliveryRec) {
+        color = "green";
+        rec = confirmedDeliveryRec;
+        note = `קיבל/ה הודעה כחוק — קיים אישור מסירה רשמי מהדואר.${qualityCaveat}`;
+      } else if (refusedRec) {
+        color = "red";
+        rec = refusedRec;
+        note = `אישור מסירה סורב ע"י הנמען — נדרש טיפול משפטי/פרוצדורלי נוסף.`;
+      } else if (notRequiredRec) {
+        color = "red";
+        rec = notRequiredRec;
+        note = `אישור המסירה חזר בציון "לא נדרש" — נדרשת בדיקה/מסירה חוזרת.`;
+      } else if (declaredMailOnlyRec) {
+        color = "yellow";
+        rec = declaredMailOnlyRec;
+        note = `טופס הצהרת השכנים מציין שנשלח מכתב בדואר רשום, אך לא הוצג אישור מסירה רשמי מהדואר — חסר אישור מסירה.${qualityCaveat}`;
+      } else if (unknownRec) {
+        color = "yellow";
+        rec = unknownRec;
+        note = `סטטוס המסירה/החתימה אינו חד־משמעי — נדרשת בדיקה ידנית.${qualityCaveat}`;
+      } else {
+        color = "yellow";
+        rec = allMatches[0];
+        note = `נמצאה התאמה אך סטטוס לא מזוהה — נדרשת בדיקה ידנית.${qualityCaveat}`;
       }
 
-      return { ...o, matchedRecord: rec, matchType, color, note };
+      return { ...o, matchedRecord: rec, color, note };
     });
-
     const hasInheritance = sp.owners.some((o) => (o.ownershipType || "").includes("ירוש"));
     const requireAll = hasInheritance || sp.owners.length <= 1;
 
@@ -543,7 +548,7 @@ export default function App() {
   }
 
   const OWNERSHIP_TYPES = ["רגיל", "משותף", "ירושה"];
-  const STATUS_OPTIONS = ["חתם", "נמסר", "סורב", "לא_נדרש", "לא_ידוע"];
+  const STATUS_OPTIONS = ["חתם", "נשלח_בדואר_רשום", "אישור_מסירה_בפועל", "סורב", "לא_נדרש", "לא_ידוע"];
 
   return (
     <div dir="rtl" lang="he" style={{ fontFamily: "'Segoe UI', Arial, sans-serif", background: COLORS.bg, minHeight: "100%", color: COLORS.text }}>
