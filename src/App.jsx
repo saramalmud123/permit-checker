@@ -140,7 +140,10 @@ function buildReport(subParcels, records) {
   let counts = { green: 0, yellow: 0, red: 0 };
 
   const groups = subParcels.map((sp) => {
-       const ownerResults = sp.owners.map((o) => {
+    const ownerResults = sp.owners.map((o) => {
+      // אוספים את כל הרשומות הרלוונטיות לבעלים זה (לא רק ההתאמה הראשונה שנמצאה) -
+      // כי לפעמים יש גם רשומת "הצהרה על משלוח" מהטופס וגם רשומת "אישור מסירה בפועל" נפרדת,
+      // ורק השילוב בין השתיים קובע את הסטטוס האמיתי.
       const idMatches = records.filter((r) => idsMatch(r.idNumber, o.idNumber));
       const nameMatches = o.name ? records.filter((r) => r.name && normalizeName(r.name) === normalizeName(o.name)) : [];
       const fuzzyMatches = o.name
@@ -154,6 +157,7 @@ function buildReport(subParcels, records) {
       const strongMatches = [...idMatches, ...nameMatches];
       const weakMatches = [...fuzzyMatches, ...aptMatches];
       const allMatchesRaw = strongMatches.length > 0 ? strongMatches : weakMatches;
+      // הסרת כפילויות (אותה רשומה עלולה להימצא בכמה קטגוריות בו-זמנית)
       const allMatches = Array.from(new Map(allMatchesRaw.map((r) => [r.id, r])).values());
 
       const matchQuality = strongMatches.length > 0 ? "strong" : weakMatches.length > 0 ? "weak" : "none";
@@ -208,6 +212,7 @@ function buildReport(subParcels, records) {
 
       return { ...o, matchedRecord: rec, color, note };
     });
+
     const hasInheritance = sp.owners.some((o) => (o.ownershipType || "").includes("ירוש"));
     const requireAll = hasInheritance || sp.owners.length <= 1;
 
@@ -252,24 +257,79 @@ function buildReport(subParcels, records) {
   return { groups, counts };
 }
 
+function buildSummaryLists(report) {
+  const signed = [];
+  const confirmedDelivery = [];
+  const missingSignature = [];
+  const missingProof = [];
+  const refusedOrNotRequired = [];
+  const unclear = [];
+  const warnings = [];
+
+  report.groups.forEach((g) => {
+    g.warnings.forEach((w) => warnings.push({ subParcelId: g.subParcelId, ...w }));
+    g.ownerResults.forEach((o) => {
+      const item = { subParcelId: g.subParcelId, name: o.name || "(ללא שם)", idNumber: o.idNumber || "" };
+      const st = o.matchedRecord?.status;
+      if (st === "חתם") signed.push(item);
+      else if (st === "אישור_מסירה_בפועל") confirmedDelivery.push(item);
+      else if (st === "נשלח_בדואר_רשום") missingProof.push(item);
+      else if (st === "סורב" || st === "לא_נדרש")
+        refusedOrNotRequired.push({ ...item, reason: st === "סורב" ? "סורב ע\"י הנמען" : "חזר בציון \"לא נדרש\"" });
+      else if (st === "לא_ידוע") unclear.push(item);
+      else missingSignature.push({ ...item, groupOk: g.groupColor !== "red" });
+    });
+  });
+
+  return { signed, confirmedDelivery, missingSignature, missingProof, refusedOrNotRequired, unclear, warnings };
+}
+
 function colorLabel(c) {
   return c === "green" ? "תקין" : c === "yellow" ? "לתשומת לב" : "חסר / שגוי";
 }
 
 function buildTextReport(report) {
+  const s = buildSummaryLists(report);
   const lines = [];
+  const fmt = (i) => `  - ${i.name}${i.idNumber ? " (ת.ז. " + i.idNumber + ")" : ""} — תת חלקה ${i.subParcelId}`;
+
   lines.push("סיכום בדיקת התאמת בעלות מול חתימות/מסירות דואר — היתר בנייה");
   lines.push(`תקין: ${report.counts.green}   |   לתשומת לב: ${report.counts.yellow}   |   חסר/שגוי: ${report.counts.red}`);
   lines.push("");
-  report.groups.forEach((g) => {
-    lines.push(`תת חלקה ${g.subParcelId} — סטטוס כללי: ${colorLabel(g.groupColor)}`);
-    if (g.ruleNote) lines.push(`  כלל שהוחל: ${g.ruleNote}`);
-    g.ownerResults.forEach((o) => {
-      lines.push(`  - ${o.name || "(ללא שם)"} ${o.idNumber ? "(ת.ז. " + o.idNumber + ")" : ""}: ${colorLabel(o.color)} — ${o.note}`);
-    });
-    g.warnings.forEach((w) => lines.push(`  ⚠ ${w.text}`));
+
+  lines.push(`בעלים שחתמו בפועל (${s.signed.length}):`);
+  s.signed.forEach((i) => lines.push(fmt(i)));
+  lines.push("");
+
+  lines.push(`בעלים שקיבלו הודעה כחוק - אושרה מסירה בדואר (${s.confirmedDelivery.length}):`);
+  s.confirmedDelivery.forEach((i) => lines.push(fmt(i)));
+  lines.push("");
+
+  lines.push(`חסר אישור מסירה - הוצהר שנשלח דואר רשום אך אין אישור רשמי (${s.missingProof.length}):`);
+  s.missingProof.forEach((i) => lines.push(fmt(i)));
+  lines.push("");
+
+  lines.push(`חתימות/הודעות חסרות לגמרי לפי נסח הטאבו (${s.missingSignature.length}):`);
+  s.missingSignature.forEach((i) => lines.push(fmt(i) + (i.groupOk ? " (הדירה תקינה בכל זאת - בן/בת הזוג האחר/ת נמצא/ה תקין/ה)" : "")));
+  lines.push("");
+
+  if (s.refusedOrNotRequired.length > 0) {
+    lines.push(`מכתבים שסורבו / לא נדרשו - טעונים טיפול משפטי (${s.refusedOrNotRequired.length}):`);
+    s.refusedOrNotRequired.forEach((i) => lines.push(fmt(i) + ` — ${i.reason}`));
     lines.push("");
-  });
+  }
+
+  if (s.unclear.length > 0) {
+    lines.push(`סטטוס לא ברור - נדרשת בדיקה ידנית (${s.unclear.length}):`);
+    s.unclear.forEach((i) => lines.push(fmt(i)));
+    lines.push("");
+  }
+
+  if (s.warnings.length > 0) {
+    lines.push("הערות אזהרה לטובת צד שלישי:");
+    s.warnings.forEach((w) => lines.push(`  ⚠ תת חלקה ${w.subParcelId}: ${w.text}`));
+  }
+
   return lines.join("\n");
 }
 
@@ -508,7 +568,7 @@ export default function App() {
         setStatusMsg(`מחלץ נתונים מטופס: ${f.name}...`);
         const { base64, mediaType } = await fileToBase64(f);
         const data = await extractViaBackend(base64, mediaType, "form");
-             (data.records || []).forEach((r) =>
+        (data.records || []).forEach((r) =>
           mergedRecords.push({
             id: uid(),
             name: r.name || "",
@@ -862,6 +922,7 @@ export default function App() {
                   <tr style={{ color: COLORS.subtext, textAlign: "right" }}>
                     <th style={{ padding: 4 }}>שם</th>
                     <th style={{ padding: 4 }}>ת.ז.</th>
+                    <th style={{ padding: 4 }}>מספר דירה</th>
                     <th style={{ padding: 4 }}>כתובת</th>
                     <th style={{ padding: 4 }}>סטטוס</th>
                     <th style={{ padding: 4 }}></th>
@@ -875,6 +936,9 @@ export default function App() {
                       </td>
                       <td style={{ padding: 4 }}>
                         <TextInput value={r.idNumber} onChange={(e) => setRecords((prev) => prev.map((x, i) => (i === ri ? { ...x, idNumber: e.target.value } : x)))} />
+                      </td>
+                      <td style={{ padding: 4 }}>
+                        <TextInput value={r.subParcelId} onChange={(e) => setRecords((prev) => prev.map((x, i) => (i === ri ? { ...x, subParcelId: e.target.value } : x)))} />
                       </td>
                       <td style={{ padding: 4 }}>
                         <TextInput value={r.address} onChange={(e) => setRecords((prev) => prev.map((x, i) => (i === ri ? { ...x, address: e.target.value } : x)))} />
@@ -892,7 +956,7 @@ export default function App() {
                 </tbody>
               </table>
               <button
-                onClick={() => setRecords((prev) => [...prev, { id: uid(), name: "", idNumber: "", address: "", status: "לא_ידוע" }])}
+                onClick={() => setRecords((prev) => [...prev, { id: uid(), name: "", idNumber: "", subParcelId: "", address: "", status: "לא_ידוע" }])}
                 style={{ marginTop: 8, background: "none", border: `1px dashed ${COLORS.border}`, borderRadius: 6, padding: "5px 10px", fontSize: 12, cursor: "pointer", color: COLORS.primary }}
               >
                 + הוסף רשומה
@@ -945,49 +1009,83 @@ export default function App() {
               ))}
             </div>
 
-            {report.groups.map((g, gi) => (
-              <div
-                key={gi}
-                style={{
-                  background: COLORS.panel,
-                  borderRadius: 10,
-                  border: `1px solid ${COLORS.border}`,
-                  borderInlineStart: `5px solid ${{ green: COLORS.green, yellow: COLORS.yellow, red: COLORS.red }[g.groupColor]}`,
-                  padding: 16,
-                  marginBottom: 16,
-                }}
-              >
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                  <div style={{ fontWeight: 700, fontSize: 15 }}>תת חלקה {g.subParcelId}</div>
-                  <Badge color={g.groupColor}>{colorLabel(g.groupColor)}</Badge>
-                </div>
-                {g.ruleNote && <div style={{ fontSize: 12.5, color: COLORS.subtext, marginBottom: 10 }}>{g.ruleNote}</div>}
-
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {g.ownerResults.map((o, oi) => (
-                    <div key={oi} style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10, background: COLORS.bg, borderRadius: 8, padding: "8px 12px" }}>
-                      <div>
-                        <div style={{ fontWeight: 600, fontSize: 13.5 }}>
-                          {o.name || "(ללא שם)"} {o.idNumber && <span style={{ color: COLORS.subtext, fontWeight: 400 }}>· ת.ז. {o.idNumber}</span>}
-                        </div>
-                        <div style={{ fontSize: 12.5, color: COLORS.subtext, marginTop: 2 }}>{o.note}</div>
-                      </div>
-                      <Badge color={o.color}>{colorLabel(o.color)}</Badge>
-                    </div>
-                  ))}
-                </div>
-
-                {g.warnings.length > 0 && (
-                  <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
-                    {g.warnings.map((w, wi) => (
-                      <div key={wi} style={{ fontSize: 12.5, color: w.resolved ? COLORS.subtext : COLORS.red }}>
-                        ⚠ {w.text}
-                      </div>
-                    ))}
+            {(() => {
+              const s = buildSummaryLists(report);
+              const Section = ({ title, color, items, emptyText, renderExtra }) => (
+                <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{title}</div>
+                    <Badge color={color}>{items.length}</Badge>
                   </div>
-                )}
-              </div>
-            ))}
+                  {items.length === 0 ? (
+                    <div style={{ fontSize: 13, color: COLORS.subtext }}>{emptyText}</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                      {items.map((it, i) => (
+                        <div key={i} style={{ display: "flex", justifyContent: "space-between", background: COLORS.bg, borderRadius: 8, padding: "7px 12px", fontSize: 13.5 }}>
+                          <span>
+                            {it.name} {it.idNumber && <span style={{ color: COLORS.subtext }}>· ת.ז. {it.idNumber}</span>}
+                          </span>
+                          <span style={{ color: COLORS.subtext }}>
+                            תת חלקה {it.subParcelId}
+                            {renderExtra ? renderExtra(it) : ""}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+
+              return (
+                <>
+                  <Section title="בעלים שחתמו בפועל" color="green" items={s.signed} emptyText="אין בעלים בקטגוריה זו." />
+                  <Section
+                    title="בעלים שקיבלו הודעה כחוק (אושרה מסירה בדואר)"
+                    color="green"
+                    items={s.confirmedDelivery}
+                    emptyText="אין בעלים בקטגוריה זו."
+                  />
+                  <Section
+                    title='חסר אישור מסירה (הוצהר "נשלח דואר" אך אין אישור רשמי)'
+                    color="yellow"
+                    items={s.missingProof}
+                    emptyText="אין בעלים בקטגוריה זו."
+                  />
+                  <Section
+                    title="חתימות/הודעות חסרות לגמרי (לפי נסח הטאבו)"
+                    color="red"
+                    items={s.missingSignature}
+                    emptyText="אין בעלים בקטגוריה זו."
+                    renderExtra={(it) => (it.groupOk ? " · הדירה תקינה בכל זאת (בן/בת הזוג האחר תקין/ה)" : "")}
+                  />
+                  {s.refusedOrNotRequired.length > 0 && (
+                    <Section
+                      title="מכתבים שסורבו / לא נדרשו — טעונים טיפול משפטי"
+                      color="red"
+                      items={s.refusedOrNotRequired}
+                      emptyText=""
+                      renderExtra={(it) => ` · ${it.reason}`}
+                    />
+                  )}
+                  {s.unclear.length > 0 && (
+                    <Section title="סטטוס לא ברור — נדרשת בדיקה ידנית" color="yellow" items={s.unclear} emptyText="" />
+                  )}
+                  {s.warnings.length > 0 && (
+                    <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+                      <div style={{ fontWeight: 700, fontSize: 15, marginBottom: 10 }}>הערות אזהרה לטובת צד שלישי</div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                        {s.warnings.map((w, i) => (
+                          <div key={i} style={{ fontSize: 12.5, color: w.resolved ? COLORS.subtext : COLORS.red }}>
+                            ⚠ תת חלקה {w.subParcelId}: {w.text}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
 
             <SectionTitle title="טקסט מרוכז להעתקה" />
             <ReportText report={report} />
