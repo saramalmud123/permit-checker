@@ -82,6 +82,25 @@ function idsMatch(a, b) {
   return na.length >= 5 && na === nb;
 }
 
+// בדיקת ספרת ביקורת רשמית למספר זהות ישראלי (אלגוריתם ידוע וציבורי).
+// זו בדיקה דטרמיניסטית ומתמטית - לא תלויה במודל שפה כלשהו - ולכן תופסת
+// בביטחון גבוה טעויות הקלדה/OCR שהובילו למספר לא תקין, ללא קשר לאיכות הקריאה.
+// הערה: תקפה למספרי זהות אישיים (9 ספרות) בלבד - לא לח.פ של חברות, שמשתמש
+// בנוסחה שונה - לכן הבדיקה לא רלוונטית לישויות כמו "מדינת ישראל" או חברות.
+function isValidIsraeliId(id) {
+  const clean = String(id || "").replace(/\D/g, "");
+  if (!clean) return null; // אין מה לבדוק
+  if (clean.length > 9) return null; // כנראה לא ת.ז. אישית (למשל ח.פ ארוך יותר) - לא בודקים
+  const padded = clean.padStart(9, "0");
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    let d = Number(padded[i]) * ((i % 2) + 1);
+    if (d > 9) d -= 9;
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
 function aptNumbersMatch(a, b) {
   const na = String(a || "").match(/\d+/)?.[0];
   const nb = String(b || "").match(/\d+/)?.[0];
@@ -114,11 +133,11 @@ function fileToBase64(file) {
 
 /* ---------------- Extraction via our own backend (no key in the browser) ---------------- */
 
-async function extractViaBackend(base64, mediaType, promptType) {
+async function extractViaBackend(base64, mediaType, promptType, knownNames) {
   const res = await fetch("/api/extract", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ base64, mediaType, promptType }),
+    body: JSON.stringify({ base64, mediaType, promptType, knownNames }),
   });
 
   let payload;
@@ -563,11 +582,20 @@ export default function App() {
         });
       }
 
+      const knownNames = Array.from(
+        new Set(
+          Object.values(mergedSubParcels).flatMap((sp) => [
+            ...sp.owners.map((o) => o.name).filter(Boolean),
+            ...sp.cautionNotes.map((c) => c.beneficiary).filter(Boolean),
+          ])
+        )
+      );
+
       const mergedRecords = [];
       for (const f of formFiles) {
         setStatusMsg(`מחלץ נתונים מטופס: ${f.name}...`);
         const { base64, mediaType } = await fileToBase64(f);
-        const data = await extractViaBackend(base64, mediaType, "form");
+        const data = await extractViaBackend(base64, mediaType, "form", knownNames);
         (data.records || []).forEach((r) =>
           mergedRecords.push({
             id: uid(),
@@ -790,6 +818,9 @@ export default function App() {
                               )
                             }
                           />
+                          {isValidIsraeliId(o.idNumber) === false && (
+                            <div style={{ fontSize: 11, color: COLORS.red, marginTop: 2 }}>⚠ נכשלה בבדיקת ביקורת - כדאי לבדוק שוב</div>
+                          )}
                         </td>
                         <td style={{ padding: 4 }}>
                           <TextInput
@@ -936,6 +967,9 @@ export default function App() {
                       </td>
                       <td style={{ padding: 4 }}>
                         <TextInput value={r.idNumber} onChange={(e) => setRecords((prev) => prev.map((x, i) => (i === ri ? { ...x, idNumber: e.target.value } : x)))} />
+                        {isValidIsraeliId(r.idNumber) === false && (
+                          <div style={{ fontSize: 11, color: COLORS.red, marginTop: 2 }}>⚠ נכשלה בבדיקת ביקורת - כדאי לבדוק שוב</div>
+                        )}
                       </td>
                       <td style={{ padding: 4 }}>
                         <TextInput value={r.subParcelId} onChange={(e) => setRecords((prev) => prev.map((x, i) => (i === ri ? { ...x, subParcelId: e.target.value } : x)))} />
